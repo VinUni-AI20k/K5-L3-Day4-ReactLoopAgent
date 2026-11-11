@@ -4,6 +4,8 @@ import os
 import urllib.error
 import urllib.request
 
+import time
+
 CONFIG = {
     'openai': ('OPENAI_API_KEY', 'https://api.openai.com/v1/chat/completions'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
@@ -14,14 +16,30 @@ CONFIG = {
 
 def post_json(url, headers, payload):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json', **headers})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        # Do not print response bodies: they may contain account or request data.
-        raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f'Không kết nối được provider: {exc.reason}') from exc
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 500, 502, 503, 504) and attempt < 5:
+                wait_time = 10 * (attempt + 1)
+                try:
+                    data = json.loads(exc.read().decode('utf-8', errors='ignore'))
+                    for d in data.get('error', {}).get('details', []):
+                        delay = d.get('retryDelay')
+                        if delay and delay.endswith('s'):
+                            wait_time = float(delay[:-1]) + 1
+                except Exception:
+                    pass
+                time.sleep(min(wait_time, 60))
+                continue
+            # Do not print response bodies: they may contain account or request data.
+            raise RuntimeError(f'Provider trả HTTP {exc.code}; kiểm tra model, key và quota.') from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt < 5:
+                time.sleep(3)
+                continue
+            raise RuntimeError(f'Không kết nối được provider: {exc}') from exc
 
 
 class Provider:
