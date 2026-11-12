@@ -97,3 +97,18 @@ Dán đoạn trace chứng minh lỗi và nêu nguyên nhân có thể xảy ra:
 - **Giới hạn của điểm judge:** LLM judge (sử dụng cùng model `gemini-3.5-flash-lite`) là phép đo ước lượng mang tính heuristics, có thể dao động nhẹ giữa các lần chạy do tính chất ngẫu nhiên của mô hình ngôn ngữ. Ngoài ra, các mechanical check áp trần điểm (score cap) đôi khi cứng nhắc đối với những câu trả lời vốn đã đúng về mặt ngữ nghĩa nhưng khác về số lượng/thứ tự bước gọi tool.
 - **Giới hạn của snapshot:** Toàn bộ dữ liệu được đóng băng tại thời điểm ngày 09/11/2026 và chỉ bao gồm tối đa 50 incident gần nhất của mỗi provider. Dữ liệu này không phản ánh trạng thái thực tế ngoài đời và không thể trả lời đầy đủ cho các truy vấn toàn diện trong quá khứ dài hạn (như các năm 2020–2025).
 - **Giới hạn của việc chạy một lần:** Một lần chạy đơn lẻ chỉ phản ánh kết quả tại một thời điểm nhất định, chưa đủ để chứng minh độ ổn định thống kê (statistical significance). Cần chạy lặp lại nhiều lần và trên nhiều kịch bản biên để đánh giá toàn diện độ tin cậy của agent loop.
+
+## 6. Ghi chú phần Bonus (`eval_bonus.json`)
+
+- **Kết quả tổng quan:** Chấm đủ **10/10 case** (`B1`–`B10`) với cấu hình `gemini` / `gemini-3.5-flash-lite`, `max_steps=16`, đạt **100.0/100** (quy đổi tham khảo **15.0/15** điểm bonus), tổng **38 model calls** và **106,531 tokens**.
+- **Retry & xử lý HTTP 429 (`RATE_LIMITED`) và `INVALID_ARGUMENTS`:**
+  - Trong `agent.py`, thêm `_parse_retry_after()` và bộ đếm `rate_limit_counts` theo `(tool_name, provider)` để giới hạn tối đa 3 lần gọi khi gặp 429 (cùng `rate_limit_guard` ngăn gọi quá ngân sách). Với HTTP 429 thật có `Retry-After` ngắn (≤ 5 giây), agent chờ hợp lý trong budget trước khi trả observation; nếu `Retry-After` quá dài hoặc đã chạm ngưỡng 3 lần, gắn `retriable=False` để agent dừng gọi lại và báo rõ phần không kiểm tra được (case `B3` phục hồi sau 1 lần 429, `B4` dừng đúng ở 3 lần gọi Vercel và giữ kết quả GitHub, `B10` phục hồi Vercel và kiểm tra đủ 5 provider).
+  - Với lỗi định dạng giả lập `INVALID_ARGUMENTS` (case `B5`), observation được trả lại cho model kèm hướng dẫn đọc lại kiểu tham số (`offset >= 0`, `limit` từ 1 đến 3 là integer) để sửa tham số ở bước tiếp theo.
+- **Pagination (`next_offset`):**
+  - Agent sử dụng `tools.schemas` và `tools.system_prompt` (kết hợp `BONUS_GUIDANCE`), đọc `next_offset` khi cần điều tra sâu timeline lịch sử. Ở case `B2`, agent phân trang qua 3 lượt (`offset=0 -> 3 -> 6 -> None`) để tìm đúng cập nhật nói về upstream GitHub.
+- **Context & lọc nhiễu (`distractors`) và Evidence Gate:**
+  - Khi thử nghiệm lần đầu, case `B1` bị lỗi mất nội dung 4 nhà cung cấp khác khi `validation_missing_source` yêu cầu bổ sung URL (do model chỉ trả phần bổ sung rời rạc), và `B6`/`B10` bị trần điểm 50 do chưa gọi `get_incident_details` hoặc bỏ cuộc sau lần 429 đầu tiên. Sau khi chỉnh sửa thông điệp yêu cầu viết lại đầy đủ toàn bộ câu trả lời và bổ sung `BONUS_GUIDANCE`, agent lọc bỏ tốt 160 bản ghi nhiễu ở `B6` (22,972 tokens) và đạt 100/100 ở cả `B1`, `B6`, `B10`.
+- **Giới hạn còn lại của phần Bonus:**
+  - Khi chạy `mode='live'`, các public status API thật có thể trả `Retry-After` lớn hơn 5 giây hoặc cấu trúc rate limit thay đổi; chiến lược hiện tại ưu tiên dừng an toàn thay vì chờ quá lâu trong một request.
+  - Dữ liệu snapshot của 3 API mới (Vercel, npm, DigitalOcean) được chụp ngày 10/11/2026 (khác thời điểm 09/11/2026 của GitHub/Cloudflare), nên việc kết hợp 5 nguồn chỉ phản ánh trạng thái tại thời điểm từng snapshot, không đại diện cho trạng thái thực tế hiện hành.
+  - Bảng dữ liệu nhiễu 160 mục trong `B6` tiêu tốn đáng kể token context (~23k tokens cho 1 case) nếu không nén/cắt bớt các trường `distractors` ở tầng tool wrapper.
